@@ -21,6 +21,7 @@ package run
 import (
 	gocontext "context"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/containerd/containerd"
@@ -43,6 +44,10 @@ var platformRunFlags = []cli.Flag{
 	cli.BoolFlag{
 		Name:  "runc-systemd-cgroup",
 		Usage: "start runc with systemd cgroup manager",
+	},
+	cli.StringFlag{
+		Name:  "uidmap",
+		Usage: "run with remapped user namespace",
 	},
 }
 
@@ -115,12 +120,37 @@ func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli
 			opts = append(opts, oci.WithImageConfig(image))
 			cOpts = append(cOpts,
 				containerd.WithImage(image),
-				containerd.WithSnapshotter(snapshotter),
+				containerd.WithSnapshotter(snapshotter))
+			if uidmap := context.String("uidmap"); uidmap != "" {
+				parts := strings.Split(uidmap, ":")
+				if len(parts) != 3 {
+					return nil, errors.New("remapping user namespace using --uidmap requires the format 'container-id:uid:size'")
+				}
+				container, err := parseUidMapPart(parts[0], "container id")
+				if err != nil {
+					return nil, err
+				}
+				uid, err := parseUidMapPart(parts[1], "uid")
+				if err != nil {
+					return nil, err
+				}
+				size, err := parseUidMapPart(parts[2], "size")
+				if err != nil {
+					return nil, err
+				}
+				opts = append(opts, oci.WithUserNamespace(container, uid, size))
+				if context.Bool("readonly") {
+					cOpts = append(cOpts, containerd.WithRemappedSnapshotView(id, image, uid, uid))
+				} else {
+					cOpts = append(cOpts, containerd.WithRemappedSnapshot(id, image, uid, uid))
+				}
+			} else {
 				// Even when "readonly" is set, we don't use KindView snapshot here. (#1495)
 				// We pass writable snapshot to the OCI runtime, and the runtime remounts it as read-only,
 				// after creating some mount points on demand.
-				containerd.WithNewSnapshot(id, image),
-				containerd.WithImageStopSignal(image, "SIGTERM"))
+				cOpts = append(cOpts, containerd.WithNewSnapshot(id, image))
+			}
+			cOpts = append(cOpts, containerd.WithImageStopSignal(image, "SIGTERM"))
 		}
 		if context.Bool("readonly") {
 			opts = append(opts, oci.WithRootFSReadonly())
@@ -214,6 +244,14 @@ func getNewTaskOpts(context *cli.Context) []containerd.NewTaskOpts {
 		return []containerd.NewTaskOpts{containerd.WithNoPivotRoot}
 	}
 	return nil
+}
+
+func parseUidMapPart(part, name string) (uint32, error) {
+	value, err := strconv.ParseUint(part, 0, 32)
+	if err != nil {
+		return 0, errors.New("--uidmap encountered an invalid " + name + ": " + part)
+	}
+	return uint32(value), err
 }
 
 func validNamespace(ns string) bool {
