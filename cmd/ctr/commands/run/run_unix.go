@@ -21,6 +21,7 @@ package run
 import (
 	gocontext "context"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/containerd/containerd"
@@ -43,6 +44,14 @@ var platformRunFlags = []cli.Flag{
 	cli.BoolFlag{
 		Name:  "runc-systemd-cgroup",
 		Usage: "start runc with systemd cgroup manager",
+	},
+	cli.StringFlag{
+		Name:  "uidmap",
+		Usage: "run with remapped user namespace to some UID",
+	},
+	cli.StringFlag{
+		Name:  "gidmap",
+		Usage: "run with remapped user namespace to some GID",
 	},
 }
 
@@ -115,12 +124,42 @@ func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli
 			opts = append(opts, oci.WithImageConfig(image))
 			cOpts = append(cOpts,
 				containerd.WithImage(image),
-				containerd.WithSnapshotter(snapshotter),
+				containerd.WithSnapshotter(snapshotter))
+			if uidmap, gidmap := context.String("uidmap"), context.String("gidmap"); uidmap != "" && gidmap != "" {
+				cUID, hUID, uSize, err := parseRemapping(uidmap, "uidmap")
+				if err != nil {
+					return nil, err
+				}
+				cGID, hGID, gSize, err := parseRemapping(gidmap, "gidmap")
+				if err != nil {
+					return nil, err
+				}
+				opts = append(opts,
+					oci.WithUserNamespace([]specs.LinuxIDMapping{
+						{
+							ContainerID: cUID,
+							HostID:      hUID,
+							Size:        uSize,
+						},
+					}, []specs.LinuxIDMapping{
+						{
+							ContainerID: cGID,
+							HostID:      hGID,
+							Size:        gSize,
+						},
+					}))
+				if context.Bool("read-only") {
+					cOpts = append(cOpts, containerd.WithRemappedSnapshotView(id, image, hUID, hGID))
+				} else {
+					cOpts = append(cOpts, containerd.WithRemappedSnapshot(id, image, hUID, hGID))
+				}
+			} else {
 				// Even when "read-only" is set, we don't use KindView snapshot here. (#1495)
 				// We pass writable snapshot to the OCI runtime, and the runtime remounts it as read-only,
 				// after creating some mount points on demand.
-				containerd.WithNewSnapshot(id, image),
-				containerd.WithImageStopSignal(image, "SIGTERM"))
+				cOpts = append(cOpts, containerd.WithNewSnapshot(id, image))
+			}
+			cOpts = append(cOpts, containerd.WithImageStopSignal(image, "SIGTERM"))
 		}
 		if context.Bool("read-only") {
 			opts = append(opts, oci.WithRootFSReadonly())
@@ -210,10 +249,51 @@ func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli
 }
 
 func getNewTaskOpts(context *cli.Context) []containerd.NewTaskOpts {
+	var (
+		tOpts []containerd.NewTaskOpts
+	)
 	if context.Bool("no-pivot") {
-		return []containerd.NewTaskOpts{containerd.WithNoPivotRoot}
+		tOpts = append(tOpts, containerd.WithNoPivotRoot)
 	}
-	return nil
+	if uidmap := context.String("uidmap"); uidmap != "" {
+		parts := strings.Split(uidmap, ":")
+		uid, _ := parseRemappingPart(parts[1], "uidmap", "uid")
+		tOpts = append(tOpts, containerd.WithUIDMap(uid))
+	}
+	if gidmap := context.String("gidmap"); gidmap != "" {
+		parts := strings.Split(gidmap, ":")
+		gid, _ := parseRemappingPart(parts[1], "gidmap", "gid")
+		tOpts = append(tOpts, containerd.WithGIDMap(gid))
+	}
+	return tOpts
+}
+
+func parseRemapping(remapping, idType string) (uint32, uint32, uint32, error) {
+	parts := strings.Split(remapping, ":")
+	if len(parts) != 3 {
+		return 0, 0, 0, errors.New("remapping user namespace using --" + idType + " requires the format 'container-id:id:size'")
+	}
+	container, err := parseRemappingPart(parts[0], idType, "container id")
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	id, err := parseRemappingPart(parts[1], idType, "id")
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	size, err := parseRemappingPart(parts[2], idType, "remapping size")
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	return container, id, size, nil
+}
+
+func parseRemappingPart(part, idType, partName string) (uint32, error) {
+	value, err := strconv.ParseUint(part, 0, 32)
+	if err != nil {
+		return 0, errors.New(idType + " encountered invalid " + partName + ": " + part)
+	}
+	return uint32(value), nil
 }
 
 func validNamespace(ns string) bool {

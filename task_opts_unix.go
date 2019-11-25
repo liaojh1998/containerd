@@ -103,3 +103,55 @@ func WithShimCgroup(path string) NewTaskOpts {
 		return nil
 	}
 }
+
+// WithUIDMap allows console I/O to work with the remapped uid
+func WithUIDMap(uid uint32) NewTaskOpts {
+	return func(ctx context.Context, c *Client, ti *TaskInfo) error {
+		if CheckRuntime(ti.Runtime(), "io.containerd.runc") {
+			if ti.Options == nil {
+				ti.Options = &options.Options{}
+			}
+			opts, ok := ti.Options.(*options.Options)
+			if !ok {
+				return errors.New("invalid v2 shim create options format")
+			}
+			opts.IoUid = uid
+		} else {
+			if ti.Options == nil {
+				ti.Options = &runctypes.CreateOptions{}
+			}
+			opts, ok := ti.Options.(*runctypes.CreateOptions)
+			if !ok {
+				return errors.New("could not cast TaskInfo Options to CreateOptions")
+			}
+			opts.IoUid = uid
+		}
+		return nil
+	}
+}
+
+// WithGIDMap allows console I/O to work with the remapped gid
+func WithGIDMap(gid uint32) NewTaskOpts {
+	return func(ctx context.Context, c *Client, ti *TaskInfo) error {
+		if CheckRuntime(ti.Runtime(), "io.containerd.runc") {
+			if ti.Options == nil {
+				ti.Options = &options.Options{}
+			}
+			opts, ok := ti.Options.(*options.Options)
+			if !ok {
+				return errors.New("invalid v2 shim create options format")
+			}
+			opts.IoGid = gid
+		} else {
+			if ti.Options == nil {
+				ti.Options = &runctypes.CreateOptions{}
+			}
+			opts, ok := ti.Options.(*runctypes.CreateOptions)
+			if !ok {
+				return errors.New("could not cast TaskInfo Options to CreateOptions")
+			}
+			opts.IoGid = gid
+		}
+		return nil
+	}
+}
