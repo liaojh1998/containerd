@@ -22,7 +22,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/containerd/containerd/containers"
@@ -74,10 +76,20 @@ func withRemappedSnapshotBase(id string, i Image, uid, gid uint32, readonly bool
 		if err != nil {
 			return err
 		}
-		if err := remapRootFS(ctx, mounts, uid, gid); err != nil {
-			snapshotter.Remove(ctx, usernsID)
-			return err
+
+		if readonly {
+			// if err := remapRootFSShiftFUSEReadOnly(ctx, mounts, uid, gid); err != nil {
+			if err := remapRootFSShiftFUSEReadOnly(ctx, mounts, uid, gid); err != nil {
+				snapshotter.Remove(ctx, usernsID)
+				return err
+			}
+		} else {
+			if err := remapRootFS(ctx, mounts, uid, gid); err != nil {
+				snapshotter.Remove(ctx, usernsID)
+				return err
+			}
 		}
+
 		if err := snapshotter.Commit(ctx, usernsID, usernsID+"-remap"); err != nil {
 			return err
 		}
@@ -96,9 +108,57 @@ func withRemappedSnapshotBase(id string, i Image, uid, gid uint32, readonly bool
 }
 
 func remapRootFS(ctx context.Context, mounts []mount.Mount, uid, gid uint32) error {
+	for _, mount := range mounts {
+		fmt.Printf("options: %s\nsource: %s\n", mount.Options, mount.Source)
+	}
 	return mount.WithTempMount(ctx, mounts, func(root string) error {
 		return filepath.Walk(root, incrementFS(root, uid, gid))
 	})
+}
+
+func getLowerDir(ops []string) string {
+	for _, op := range ops {
+		strings.HasPrefix(op, "lower=")
+		var opStart = strings.Index(op, "=")
+		return op[opStart+1 : len(op)]
+	}
+	return ""
+}
+
+func getLowerDirs(mounts []mount.Mount) string {
+	var lowerdirs []string
+	for _, mount := range mounts {
+		if mount.Type == "overlay" {
+			lowerdirs = append(lowerdirs, getLowerDir(mount.Options))
+		}
+	}
+	return strings.Join(lowerdirs, ":")
+}
+
+func remapRootFSShiftFUSEReadOnly(ctx context.Context, mounts []mount.Mount, uid, gid uint32) error {
+	var lowerMounts = getLowerDirs(mounts)
+	lowerMountOpt := "lowerdir=" + lowerMounts
+	uidMapopt := fmt.Sprintf("uidmapping=0:%d:1000", uid)
+	fmt.Println(lowerMountOpt, uidMapopt)
+
+	return mount.WithTempMount(ctx, mounts, func(root string) error {
+		fuseOverlayCmd := exec.Command("fuse-overlayfs", "-o", lowerMountOpt,
+			"-o", uidMapopt, root)
+		out, err := fuseOverlayCmd.Output()
+		if err != nil {
+			fmt.Printf("Error while remapping via fuseoverlayfs. output: %s\n", string(out))
+		}
+
+		info, err := os.Lstat(root)
+		if err != nil {
+			fmt.Printf("error while statting is %s\n", err.Error())
+		}
+		stat := info.Sys().(*syscall.Stat_t)
+		fmt.Printf("uid/gid for %s is %d/%d\n", root, stat.Uid, stat.Gid)
+
+		return err
+	})
+
 }
 
 func incrementFS(root string, uidInc, gidInc uint32) filepath.WalkFunc {
@@ -110,7 +170,12 @@ func incrementFS(root string, uidInc, gidInc uint32) filepath.WalkFunc {
 			stat = info.Sys().(*syscall.Stat_t)
 			u, g = int(stat.Uid + uidInc), int(stat.Gid + gidInc)
 		)
+		chownret := os.Lchown(path, u, g)
+		info, err = os.Lstat(path)
+		stat = info.Sys().(*syscall.Stat_t)
+		fmt.Printf("chowned %s result uid: %d, gid: %d\n", path, stat.Uid, stat.Gid)
 		// be sure the lchown the path as to not de-reference the symlink to a host file
-		return os.Lchown(path, u, g)
+		//return os.Lchown(path, u, g)
+		return chownret
 	}
 }
