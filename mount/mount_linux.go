@@ -19,6 +19,7 @@ package mount
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path"
 	"strings"
 	"time"
@@ -28,14 +29,27 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-var pagesize = 4096
+var (
+	pagesize              = 4096
+	allowedHelperBinaries = []string{"mount.fuse", "mount.fuse3"}
+)
 
 func init() {
 	pagesize = os.Getpagesize()
 }
 
-// Mount to the provided target path
+// Mount to the provided target path.
+//
+// If m.Type starts with "fuse." or "fuse3.", "mount.fuse" or "mount.fuse3"
+// helper binary is called.
 func (m *Mount) Mount(target string) error {
+	for _, helperBinary := range allowedHelperBinaries {
+		// helperBinary = "mount.fuse", typePrefix = "fuse."
+		typePrefix := strings.TrimPrefix(helperBinary, "mount.") + "."
+		if strings.HasPrefix(m.Type, typePrefix) {
+			return m.mountWithHelper(helperBinary, typePrefix, target)
+		}
+	}
 	var (
 		chdir   string
 		options = m.Options
@@ -93,6 +107,22 @@ func Unmount(target string, flags int) error {
 }
 
 func unmount(target string, flags int) error {
+	inf, err := Lookup(target)
+	if err != nil {
+		// UnmountAll() expects unix.EINVAL
+		return unix.EINVAL
+	}
+	// For FUSE mounts, attempting to execute fusermount helper binary is preferred
+	// https://github.com/containerd/containerd/pull/3765#discussion_r342083514
+	if strings.HasPrefix(inf.FSType, "fuse3.") || strings.HasPrefix(inf.FSType, "fuse.") {
+		for _, helperBinary := range []string{"fusermount3", "fusermount"} {
+			cmd := exec.Command(helperBinary, "-u", target)
+			if err := cmd.Run(); err == nil {
+				return nil
+			}
+			// ignore error and try unix.Unmount
+		}
+	}
 	for i := 0; i < 50; i++ {
 		if err := unix.Unmount(target, flags); err != nil {
 			switch err {
@@ -316,4 +346,22 @@ func mountAt(chdir string, source, target, fstype string, flags uintptr, data st
 		return errors.Wrap(errors.Errorf("%s is not dir", chdir), "failed to mountat")
 	}
 	return errors.Wrap(sys.FMountat(f.Fd(), source, target, fstype, flags, data), "failed to mountat")
+}
+
+func (m *Mount) mountWithHelper(helperBinary, typePrefix, target string) error {
+	// helperBinary: "mount.fuse3"
+	// target: "/foo/merged"
+	// m.Type: "fuse3.fuse-overlayfs"
+	// command: "mount.fuse3 overlay /foo/merged -o lowerdir=/foo/lower2:/foo/lower1,upperdir=/foo/upper,workdir=/foo/work -t fuse-overlayfs"
+	args := []string{m.Source, target}
+	for _, o := range m.Options {
+		args = append(args, "-o", o)
+	}
+	args = append(args, "-t", strings.TrimPrefix(m.Type, typePrefix))
+	cmd := exec.Command(helperBinary, args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return errors.Wrapf(err, "mount helper [%s %v] failed: %q", helperBinary, args, string(out))
+	}
+	return nil
 }
