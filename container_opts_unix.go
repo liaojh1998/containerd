@@ -61,6 +61,7 @@ func withRemappedSnapshotBase(id string, i Image, uid, gid uint32, readonly bool
 			opts     = []snapshots.Opt{}
 		)
 		c.Snapshotter, err = client.resolveSnapshotterName(ctx, c.Snapshotter)
+		fmt.Printf("using snapshotter: %s\n", c.Snapshotter)
 		if err != nil {
 			return err
 		}
@@ -85,6 +86,14 @@ func withRemappedSnapshotBase(id string, i Image, uid, gid uint32, readonly bool
 			}
 		}
 		mounts, err := snapshotter.Prepare(ctx, usernsID+"-remap", parent, opts...)
+		for _, m := range mounts {
+			fmt.Printf("mount type: %s\n", m.Type)
+			fmt.Printf("mount source: %s\n", m.Source)
+			fmt.Printf("mount options:\n")
+			for _, o := range m.Options {
+				fmt.Printf("\t%s\n", o)
+			}
+		}
 		if err != nil {
 			return err
 		}

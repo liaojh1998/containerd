@@ -23,7 +23,7 @@ This is a demo of comparison between FUSE-OverlayFS and Lchown for remapping use
 ```
 5. In a separate terminal from the first two, run `sudo containerd`.
 6. In the root terminal, run `CONTAINERD_SNAPSHOTTER=fuse-overlayfs ctr image pull docker.io/library/alpine:latest` to get a snapshot of `alpine`.
-7. In the root terminal, run `CONTAINERD_SNAPSHOTTER=fuse-overlayfs ctr run --tty --rm --uidmap 0:1234:10000 --gidmap 0:2345:10000 docker.io/library/alpine:latest alpine-remapped` to see `alpine` get remapped into user namespace very quickly.
+7. In the root terminal, run `CONTAINERD_SNAPSHOTTER=fuse-overlayfs ctr run --tty --rm --uidmap 0:1234:10000 --gidmap 0:2345:10000 --remapper fuse-overlayfs docker.io/library/alpine:latest alpine-remapped` to see `alpine` get remapped into user namespace very quickly.
 
 ## Note
 * It might be required after very run to remove the `docker.io/library/alpine:latest` image so that they can be pulled through the other file system. To do so, run `sudo ctr image remove docker.io/library/alpine:latest`.
