@@ -1377,9 +1377,9 @@ func testUserNamespaces(t *testing.T, readonlyRootFS bool) {
 		}),
 	)}
 	if readonlyRootFS {
-		opts = append([]NewContainerOpts{WithRemappedSnapshotView(id, image, 1000, 2000)}, opts...)
+		opts = append([]NewContainerOpts{WithRemappedSnapshotView(id, image, 1000, 2000, "chown")}, opts...)
 	} else {
-		opts = append([]NewContainerOpts{WithRemappedSnapshot(id, image, 1000, 2000)}, opts...)
+		opts = append([]NewContainerOpts{WithRemappedSnapshot(id, image, 1000, 2000, "chown")}, opts...)
 	}
 
 	container, err := client.NewContainer(ctx, id, opts...)
