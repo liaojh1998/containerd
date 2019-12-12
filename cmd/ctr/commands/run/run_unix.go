@@ -53,6 +53,10 @@ var platformRunFlags = []cli.Flag{
 		Name:  "gidmap",
 		Usage: "run with remapped user namespace to some GID",
 	},
+	cli.StringFlag{
+		Name:  "remapper",
+		Usage: "specify a remapping technique to remap the user namespace (chown|fuse-overlayfs)",
+	},
 }
 
 // NewContainer creates a new container
@@ -134,6 +138,10 @@ func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli
 				if err != nil {
 					return nil, err
 				}
+				remapType := "chown"
+				if remapper := context.String("remapper"); remapper != "" {
+					remapType = remapper
+				}
 				opts = append(opts,
 					oci.WithUserNamespace([]specs.LinuxIDMapping{
 						{
@@ -149,9 +157,9 @@ func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli
 						},
 					}))
 				if context.Bool("read-only") {
-					cOpts = append(cOpts, containerd.WithRemappedSnapshotView(id, image, hUID, hGID))
+					cOpts = append(cOpts, containerd.WithRemappedSnapshotView(id, image, hUID, hGID, remapType))
 				} else {
-					cOpts = append(cOpts, containerd.WithRemappedSnapshot(id, image, hUID, hGID))
+					cOpts = append(cOpts, containerd.WithRemappedSnapshot(id, image, hUID, hGID, remapType))
 				}
 			} else {
 				// Even when "read-only" is set, we don't use KindView snapshot here. (#1495)
