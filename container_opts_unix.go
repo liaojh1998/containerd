@@ -22,6 +22,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"syscall"
 
@@ -29,6 +30,7 @@ import (
 	"github.com/containerd/containerd/errdefs"
 	"github.com/containerd/containerd/mount"
 	"github.com/opencontainers/image-spec/identity"
+	"github.com/pkg/errors"
 )
 
 // WithRemappedSnapshot creates a new snapshot and remaps the uid/gid for the
@@ -53,6 +55,10 @@ func withRemappedSnapshotBase(id string, i Image, uid, gid uint32, readonly bool
 			parent   = identity.ChainID(diffIDs).String()
 			usernsID = fmt.Sprintf("%s-%d-%d", parent, uid, gid)
 		)
+		fmt.Printf("Remapping to uid: %d, gid: %d\n", uid, gid)
+		fmt.Printf("parent: %s\n", parent)
+		fmt.Printf("ID: %s\n", usernsID+"-remap")
+		fmt.Printf("Container snapshotter: %s\n", c.Snapshotter)
 		c.Snapshotter, err = client.resolveSnapshotterName(ctx, c.Snapshotter)
 		if err != nil {
 			return err
@@ -61,6 +67,7 @@ func withRemappedSnapshotBase(id string, i Image, uid, gid uint32, readonly bool
 		if err != nil {
 			return err
 		}
+		fmt.Printf("got snapshotter!\n")
 		if _, err := snapshotter.Stat(ctx, usernsID); err == nil {
 			if _, err := snapshotter.Prepare(ctx, id, usernsID); err == nil {
 				c.SnapshotKey = id
@@ -70,21 +77,30 @@ func withRemappedSnapshotBase(id string, i Image, uid, gid uint32, readonly bool
 				return err
 			}
 		}
+		fmt.Printf("prepared snapshot\n")
 		mounts, err := snapshotter.Prepare(ctx, usernsID+"-remap", parent)
 		if err != nil {
 			return err
 		}
+		fmt.Printf("remapping...\n")
 		if err := remapRootFS(ctx, mounts, uid, gid); err != nil {
 			snapshotter.Remove(ctx, usernsID)
 			return err
 		}
+		fmt.Printf("committing...\n")
 		if err := snapshotter.Commit(ctx, usernsID, usernsID+"-remap"); err != nil {
 			return err
 		}
 		if readonly {
-			_, err = snapshotter.View(ctx, id, usernsID)
+			fmt.Printf("preparing view...\n")
+			mounts, err = snapshotter.View(ctx, id, usernsID)
 		} else {
-			_, err = snapshotter.Prepare(ctx, id, usernsID)
+			fmt.Printf("preparing...\n")
+			mounts, err = snapshotter.Prepare(ctx, id, usernsID)
+		}
+		if err := remapRootFS(ctx, mounts, uid, gid); err != nil {
+			snapshotter.Remove(ctx, usernsID)
+			return err
 		}
 		if err != nil {
 			return err
@@ -97,7 +113,26 @@ func withRemappedSnapshotBase(id string, i Image, uid, gid uint32, readonly bool
 
 func remapRootFS(ctx context.Context, mounts []mount.Mount, uid, gid uint32) error {
 	return mount.WithTempMount(ctx, mounts, func(root string) error {
-		return filepath.Walk(root, incrementFS(root, uid, gid))
+		defer func() error {
+			if _, uerr := exec.Command("fusermount", "-u", root).Output(); uerr != nil {
+				return errors.Wrapf(uerr, "failed to fusermount unmount %s", root)
+			}
+			return nil
+		}()
+
+		options := fmt.Sprintf("lowerdir="+root+",uidmapping=0:%d:10000,gidmapping=0:%d:10000", uid, gid)
+		fmt.Printf("Options to fuse-overlayfs: %s\n", options)
+		if _, uerr := exec.Command("fuse-overlayfs", "-o", options, root).Output(); uerr != nil {
+			return errors.Wrapf(uerr, "failed to fuse-overlayfs mount %s", root)
+		}
+		filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+			stat := info.Sys().(*syscall.Stat_t)
+			fmt.Printf("%s %d %d\n", path, stat.Uid, stat.Gid)
+			return nil
+		})
+		return nil
+
+		//return filepath.Walk(root, incrementFS(root, uid, gid))
 	})
 }
 
@@ -111,6 +146,7 @@ func incrementFS(root string, uidInc, gidInc uint32) filepath.WalkFunc {
 			u, g = int(stat.Uid + uidInc), int(stat.Gid + gidInc)
 		)
 		// be sure the lchown the path as to not de-reference the symlink to a host file
+		fmt.Printf("chowning path %s...\n", path)
 		return os.Lchown(path, u, g)
 	}
 }
