@@ -497,7 +497,7 @@ func (o *snapshotter) mounts(s storage.Snapshot) []mount.Mount {
 	options = append(options, commonMountOptions...)
 	return []mount.Mount{
 		{
-			Type:    "fuse3." + fuseoverlayfsBinary,
+			Type:    "fuse." + fuseoverlayfsBinary,
 			Source:  "overlay",
 			Options: options,
 		},
