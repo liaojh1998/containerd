@@ -1,3 +1,7 @@
+## Demo FUSE-OverlayFS
+For the demo that starts remapped user namespaces in FUSE-OverlayFS, please look in the [fuseoverlay](https://github.com/liaojh1998/containerd/tree/fuse-overlay/fuseoverlay) directory.
+
+
 ![containerd banner](https://raw.githubusercontent.com/cncf/artwork/master/projects/containerd/horizontal/color/containerd-horizontal-color.png)
 
 [![GoDoc](https://godoc.org/github.com/containerd/containerd?status.svg)](https://godoc.org/github.com/containerd/containerd)
